@@ -8,9 +8,9 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: 'Runner for the Linux compile job: ubuntu-latest, codebuild, or k8s-default-runners. macOS and Windows are always GitHub-hosted.'
+        description: 'Runner for the Linux compile job: ubuntu-24.04, codebuild, or k8s-default-runners. macOS and Windows are always GitHub-hosted.'
         required: false
-        default: 'ubuntu-latest'
+        default: 'ubuntu-24.04'
         type: string
       build_linux:
         description: 'Build for Linux'
@@ -147,7 +147,7 @@ jobs:
   # passes through verbatim and the build ships exactly what the branch declares.
   stamp-version:
     name: Stamp Versions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       integrator_version: ${{ steps.stamp.outputs.integrator_version }}
       wi_extension_version: ${{ steps.stamp.outputs.wi_extension_version }}
@@ -186,7 +186,7 @@ jobs:
   resolve-versions:
     name: Resolve Component Versions
     needs: stamp-version
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       ballerina_version: ${{ steps.read-versions.outputs.ballerina_version }}
       ballerina_extension_version: ${{ steps.read-versions.outputs.ballerina_extension_version }}
@@ -440,10 +440,11 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
+      # Pinned rather than read from lib/vscode/.nvmrc, which lags the current Node.js 24 release.
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version-file: lib/vscode/.nvmrc
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: lib/vscode/package-lock.json
 
@@ -1050,10 +1051,11 @@ jobs:
           ref: ${{ inputs.ref || github.ref }}
           persist-credentials: false
 
+      # Pinned rather than read from lib/vscode/.nvmrc, which lags the current Node.js 24 release.
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version-file: lib/vscode/.nvmrc
+          node-version: 24.22.1
           cache: npm
           cache-dependency-path: lib/vscode/package-lock.json
 
@@ -1523,7 +1525,7 @@ jobs:
 
   create-release:
     name: Create Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [resolve-versions, compile, build-macos, build-windows, smoke-test, smoke-test-windows]
     if: always() && (needs.compile.result == 'success') && (needs.smoke-test.result == 'success' || needs.smoke-test.result == 'skipped') && (needs.smoke-test-windows.result == 'success' || needs.smoke-test-windows.result == 'skipped') && (inputs.build_packed_installers == false) && (inputs.publish_tag == '')
     steps:
@@ -1567,7 +1569,7 @@ jobs:
 
   publish-github-release:
     name: Publish GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     needs: [resolve-versions, compile, build-macos, build-windows, smoke-test, smoke-test-windows]
     # A published tag is permanent and user-visible, so every platform that was asked for must have
     # succeeded. `skipped` is allowed for build-macos/build-windows because they are gated on their
@@ -1595,6 +1597,23 @@ jobs:
       (inputs.publish_tag != '') &&
       (inputs.build_packed_installers == true)
     steps:
+      # First, before any download: actions/checkout clears a workspace that holds no .git before it
+      # clones, so a checkout after the downloads below would silently delete every artifact they
+      # fetched. The job reads ci/build/update-manifest.config.json and runs the generator in fetch
+      # mode (see "Stage core, runtime and component files").
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          # Same pin as every other job that runs the generator: the fetch mode here has to agree
+          # byte for byte with what publish-update-source mirrors.
+          node-version: 24.22.1
+
       - name: Download Linux DEB artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -1673,12 +1692,13 @@ jobs:
         continue-on-error: true
 
       # The WI extension ships as a release asset: for nightly, the rolling tag is how the vsix is
-      # distributed (there is no Marketplace / Open VSX publish).
+      # distributed (there is no Marketplace / Open VSX publish), and publish-vsix takes it to the
+      # marketplaces from here. Staged and signed below with the extensions it is bundled with.
       - name: Download WI extension VSIX
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: wi-extension-vsix
-          path: release-files/
+          path: wi-extension/
         continue-on-error: true
 
       # The per-OS "core" editors the installers above were built from (VSCode + patches + bundled
@@ -1717,7 +1737,53 @@ jobs:
           name: build-versions
           path: core/versions/
 
-      - name: Stage core files
+      # The packaged runtimes (ci/build/package-ballerina-runtime.sh, package-icp.sh) the installers
+      # above bundled and the update source serves, plus the JRE and the bundled extensions the feed
+      # serves. Published next to the cores for the same reason: a downstream build (the support
+      # distribution) must ship these exact bytes and fetch nothing from anywhere but this release.
+      - name: Download Ballerina runtime package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ballerina-runtime
+          path: runtimes/
+
+      - name: Download ICP package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: icp
+          path: runtimes/
+
+      # The GitHub-release extensions the compile job bundled (absent when every extension came from
+      # Open VSX). The generator publishes these files rather than fetching them again. Gated on the
+      # same condition the compile job stages them on, not continue-on-error: a failed download
+      # would otherwise send the generator back to a rolling tag that may have moved on.
+      - name: Download the bundled GitHub-release extensions
+        if: ${{ (inputs.ballerina_extension_source == 'github' && needs.resolve-versions.outputs.ballerina_extension_version != '') || (inputs.mi_extension_source == 'github' && needs.resolve-versions.outputs.mi_extension_version != '') }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bundled-github-extensions
+          path: bundled-extensions/
+
+      # Fetch and require the JRE only for the platforms whose cores and installers the release
+      # carries. Linux always: build_linux scopes the update feed ("Resolve published targets") but
+      # never reaches the compile job, which builds the Linux core and installers on every run, and
+      # "Verify release assets" requires them unconditionally.
+      - name: Resolve release targets
+        id: release-targets
+        shell: bash
+        env:
+          BUILD_MACOS: ${{ inputs.build_macos }}
+          BUILD_WINDOWS: ${{ inputs.build_windows }}
+        run: |
+          set -euo pipefail
+          TARGETS=("linux-x64")
+          [ "${BUILD_MACOS}" = "true" ] && TARGETS+=("darwin-arm64" "darwin-x64")
+          [ "${BUILD_WINDOWS}" = "true" ] && TARGETS+=("win32-x64")
+          printf -v JOINED '%s,' "${TARGETS[@]}"
+          echo "targets=${JOINED%,}" >> "$GITHUB_OUTPUT"
+          echo "release targets: ${JOINED%,}"
+
+      - name: Stage core, runtime and component files
         shell: bash
         env:
           INTEGRATOR_VERSION: ${{ needs.resolve-versions.outputs.integrator_version }}
@@ -1726,11 +1792,17 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
+          # Every file staged here is signed by the next step, from this list rather than a second
+          # set of globs, so the signed set cannot drift from the staged one. Kept out of
+          # release-files so it is not published.
+          SIGN_LIST="${RUNNER_TEMP}/release-sign.list"
+          : > "${SIGN_LIST}"
           stage() {
             local src="$1" name="$2"
             [ -f "${src}" ] || return 0
             mv "${src}" "release-files/${name}"
             (cd release-files && openssl dgst -sha256 -out "${name}.sha256" "${name}")
+            echo "${name}" >> "${SIGN_LIST}"
             ls -lh "release-files/${name}"
           }
           P="${ARTIFACT_SLUG}-${INTEGRATOR_VERSION}-core"
@@ -1746,7 +1818,7 @@ jobs:
       - name: cosign-installer
         uses: sigstore/cosign-installer@59acb6260d9c0ba8f4a2f9d9b48431a222b68e20 # v3.5.0
 
-      - name: Sign the core files
+      - name: Sign the core, runtime and component files
         shell: bash
         env:
           INTEGRATOR_VERSION: ${{ needs.resolve-versions.outputs.integrator_version }}
@@ -1954,7 +2026,7 @@ jobs:
 
   publish-update-source:
     name: Publish Update Source
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Shared with the Publish Component Updates workflow: both read-modify-write the same
     # index.json, and two at once would drop one of the two lines they repointed.
     concurrency:
@@ -1995,7 +2067,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '20'
+          node-version: 24.22.1
 
       # The WI extension is built in-repo (no public download URL); its VSIX is mirrored to the
       # update bucket from this artifact (config `sourceFile`).

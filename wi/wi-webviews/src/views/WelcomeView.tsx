@@ -48,7 +48,6 @@ import {
 	CardsLoadingState,
 	Caption,
 	ConfigureBtn,
-	GetStartedBadge,
 	Headline,
 	RecentProjectsPanel,
 	SigninBtn,
@@ -84,6 +83,11 @@ const DISABLED_ROW_STYLE: React.CSSProperties = {
     cursor: "not-allowed",
     pointerEvents: "none",
 };
+
+// Keeps the space the removed Get Started badge took, so the hero layout is unchanged.
+const WelcomeHeadline = styled(Headline)`
+    margin-top: calc(13px * 1.21 + 8px * 2 + 24px);
+`;
 
 const MoreChevron = styled.span`
     display: inline-block;
@@ -457,8 +461,7 @@ export const WelcomeView: React.FC = () => {
 						</ConfigureBtn>
 					</TopBtnSection>
 				</TopControlsSection>
-				<GetStartedBadge>Get Started</GetStartedBadge>
-				<Headline>WSO2 Integrator</Headline>
+				<WelcomeHeadline>WSO2 Integrator</WelcomeHeadline>
 				<Caption>
                     Build and connect integrations, long-running workflows, MCP servers,
                     and AI agents with the 100% open source WSO2 Integrator.

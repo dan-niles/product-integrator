@@ -6,7 +6,10 @@ name: Promote Update Channel
 # A channel is not one source.json: each release publishes source-<version>.json and claims a line
 # in index.json. So promotion copies the documents the source channel currently serves and upserts
 # the matching index entries in the target, per line — a line the target serves and the source does
-# not is left alone rather than dropped. See ci/build/promote-update-channel.py.
+# not is left alone rather than dropped. `version` names the release to move, or "all" for every
+# line the source channel serves — required, because a testing channel holds several candidates and
+# promoting all of them should never be what happens by default.
+# See ci/build/promote-update-channel.py.
 #
 # Documents and their detached signatures are copied verbatim, so the signature stays valid and
 # nothing is re-signed; the client resolves by channel PATH and never reads a document's own
@@ -57,7 +60,7 @@ permissions:
 jobs:
   promote:
     name: Promote ${{ github.event.inputs.from_channel }} to ${{ github.event.inputs.to_channel }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Validate promotion
         env:
@@ -90,6 +93,7 @@ jobs:
           # manifests/agent-builder/<channel>/ and promote as "agent-builder/<channel>".
           PRODUCT_PREFIX: ${{ github.event.inputs.product == 'agent-builder' && 'agent-builder/' || '' }}
         run: |
+          set -euo pipefail
           python3 ci/build/promote-update-channel.py \
             "${{ secrets.AWS_UPDATE_S3_BUCKET }}" \
             "${PRODUCT_PREFIX}${{ github.event.inputs.from_channel }}" \
